@@ -3,73 +3,68 @@ document.getElementById("reembolsoForm").addEventListener("submit", async functi
 
   const form = e.target;
   const mensajeDiv = document.getElementById("mensaje");
-  mensajeDiv.innerText = ""; // limpiar mensaje
+  mensajeDiv.innerText = ""; // Limpiar mensaje anterior
 
-  // Recolectar campos del formulario
-  const nombre = form.nombre.value.trim();
-  const cedula = form.cedula.value.trim();
-  const departamento = form.departamento.value.trim();
-  const correo = form.correo.value.trim();
-  const telefono = form.telefono.value.trim();
-  const fechaGasto = form.fechaGasto.value;
-  const tipoGasto = form.tipoGasto.value;
-  const numeroFactura = form.numeroFactura.value.trim();
-  const monto = parseFloat(form.monto.value);
-  const medioPago = form.medioPago.value;
-  const descripcion = form.descripcion.value.trim();
   const archivo = form.archivo.files[0];
 
-  // Validación mínima personalizada (opcional)
-  if (!nombre || !cedula || !departamento || !correo || !fechaGasto || !tipoGasto || !numeroFactura || isNaN(monto) || monto <= 0 || !medioPago || !descripcion) {
-    mensajeDiv.innerText = "⚠️ Por favor completa todos los campos requeridos.";
+  // Recolectar y sanitizar campos
+  const campos = {
+    nombre: form.nombre.value.trim(),
+    cedula: form.cedula.value.trim(),
+    departamento: form.departamento.value.trim(),
+    correo: form.correo.value.trim(),
+    telefono: form.telefono.value.trim(),
+    fechaGasto: form.fechaGasto.value,
+    tipoGasto: form.tipoGasto.value,
+    numeroFactura: form.numeroFactura.value.trim(),
+    monto: parseFloat(form.monto.value),
+    medioPago: form.medioPago.value,
+    descripcion: form.descripcion.value.trim()
+  };
+
+  // Validaciones básicas
+  const camposIncompletos = Object.values(campos).some(
+    val => val === "" || val === null || val === undefined
+  );
+
+  if (camposIncompletos || isNaN(campos.monto) || campos.monto <= 0 || !archivo) {
+    mensajeDiv.innerText = "⚠️ Por favor completa todos los campos y adjunta un archivo válido.";
     return;
   }
 
   try {
-    // Crear las variables para Camunda
-    const variables = {
-      nombre: { value: nombre, type: "String" },
-      cedula: { value: cedula, type: "String" },
-      departamento: { value: departamento, type: "String" },
-      correo: { value: correo, type: "String" },
-      telefono: { value: telefono, type: "String" },
-      fechaGasto: { value: fechaGasto, type: "String" },
-      tipoGasto: { value: tipoGasto, type: "String" },
-      numeroFactura: { value: numeroFactura, type: "String" },
-      monto: { value: monto, type: "Double" },
-      medioPago: { value: medioPago, type: "String" },
-      descripcion: { value: descripcion, type: "String" }
-      // Puedes agregar más variables si se requiere
-    };
+    // ✅ Crear FormData para solicitud tipo multipart/form-data
+    const formData = new FormData();
+    formData.append("archivo", archivo);
+    formData.append("solicitud", JSON.stringify(campos));  // Enviar como string plano, no blob
 
-    const payload = {
-      variables: variables,
-      businessKey: `reembolso-${cedula}-${Date.now()}`
-    };
-
-    // 1. Opcional: manejo del archivo (si tienes backend)
-    // Aquí podrías enviar el archivo a un backend con FormData.
-    // Luego, podrías guardar el nombre o la URL como variable.
-
-    // 2. Enviar los datos al motor BPM
-    const response = await fetch("http://localhost:8080/engine-rest/process-definition/key/reembolso/start", {
+    // Enviar solicitud al backend
+    const response = await fetch("http://localhost:8000/reembolso", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(payload)
+      body: formData
     });
 
     if (response.ok) {
       mensajeDiv.innerText = "✅ Solicitud enviada correctamente.";
       form.reset();
     } else {
-      const errorText = await response.text();
-      mensajeDiv.innerText = "❌ Error al enviar solicitud: " + errorText;
+      try {
+        const error = await response.json();
+        if (Array.isArray(error.detail)) {
+          const errores = error.detail
+            .map(e => `• ${e.msg} (${e.loc.join(" > ")})`)
+            .join("\n");
+          mensajeDiv.innerText = "❌ Errores del formulario:\n" + errores;
+        } else {
+          mensajeDiv.innerText = "❌ Error: " + (error.detail || "Desconocido");
+        }
+      } catch (errParseo) {
+        const textoPlano = await response.text();
+        mensajeDiv.innerText = "❌ Error inesperado:\n" + textoPlano;
+      }
     }
-
   } catch (error) {
-    console.error("Error de conexión:", error);
+    console.error("❌ Error de red:", error);
     mensajeDiv.innerText = "❌ No se pudo conectar al servidor.";
   }
 });
