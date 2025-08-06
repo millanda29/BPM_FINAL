@@ -1,6 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from pyzeebe import create_insecure_channel, ZeebeClient
 from dotenv import load_dotenv
 from models import SolicitudReembolso
@@ -8,6 +8,8 @@ import os
 import json
 import asyncio
 import logging
+from uuid import uuid4
+from datetime import datetime
 
 # Configurar logging básico
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +39,6 @@ channel = create_insecure_channel(target)
 
 # Crear cliente Zeebe
 zeebe_client = ZeebeClient(channel)
-
 logger.info("Cliente Zeebe creado correctamente")
 
 # Inicializar aplicación FastAPI
@@ -74,9 +75,13 @@ async def enviar_reembolso(
             logger.warning(f"Validación fallida: {str(e)}")
             raise HTTPException(status_code=422, detail=f"❌ Validación fallida: {str(e)}")
 
-        # Guardar archivo localmente
+        # Guardar archivo localmente con nombre único + timestamp
         os.makedirs("archivos", exist_ok=True)
-        archivo_path = os.path.join("archivos", archivo.filename)
+        extension = os.path.splitext(archivo.filename)[1]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        nombre_unico = f"{uuid4().hex}_{timestamp}{extension}"
+        archivo_path = os.path.join("archivos", nombre_unico)
+
         with open(archivo_path, "wb") as f:
             contenido = await archivo.read()
             f.write(contenido)
@@ -84,10 +89,10 @@ async def enviar_reembolso(
 
         # Preparar variables para Zeebe
         variables = solicitud_obj.dict(by_alias=True)
-        variables["archivoNombre"] = archivo.filename
+        variables["archivoNombre"] = nombre_unico
         logger.info(f"Variables para Zeebe: {variables}")
 
-        # Ejecutar proceso en Zeebe con timeout para evitar bloqueo indefinido
+        # Ejecutar proceso en Zeebe con timeout
         try:
             await asyncio.wait_for(
                 zeebe_client.run_process(
@@ -106,7 +111,10 @@ async def enviar_reembolso(
 
         return JSONResponse(
             status_code=200,
-            content={"mensaje": "✅ Reembolso enviado correctamente a Zeebe local."}
+            content={
+                "mensaje": "✅ Reembolso enviado correctamente a Zeebe local.",
+                "archivoGuardado": nombre_unico
+            }
         )
 
     except HTTPException as he:
@@ -115,3 +123,21 @@ async def enviar_reembolso(
     except Exception as e:
         logger.error(f"Error inesperado en servidor: {e}")
         raise HTTPException(status_code=500, detail=f"⚠️ Error inesperado del servidor: {str(e)}")
+
+# Endpoint para descargar archivo PDF
+@app.get("/archivo/{nombre_archivo}")
+async def descargar_archivo(nombre_archivo: str):
+    archivo_path = os.path.join("archivos", nombre_archivo)
+
+    if not os.path.isfile(archivo_path):
+        raise HTTPException(status_code=404, detail="Archivo no encontrado.")
+
+    return FileResponse(
+        archivo_path,
+        media_type="application/pdf",
+        filename=nombre_archivo
+    )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
